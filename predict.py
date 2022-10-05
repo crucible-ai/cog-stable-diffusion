@@ -1,6 +1,9 @@
+import base64
 import os
-from typing import Optional, List
+from io import BytesIO
+from typing import Optional, List, Tuple
 
+import requests
 import torch
 from torch import autocast
 from diffusers import PNDMScheduler, LMSDiscreteScheduler
@@ -72,6 +75,9 @@ class Predictor(BasePredictor):
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
+        callback_url: str = Input(
+            description="The URL to which each individual step will be POST-ed as a byte stream.", default=None
+        ),
     ) -> List[Path]:
         """Run a single prediction on the model"""
         if seed is None:
@@ -102,7 +108,21 @@ class Predictor(BasePredictor):
         if mask:
             mask = Image.open(mask).convert("RGB")
             mask = preprocess_mask(mask, width, height).to("cuda")
-
+        
+        callback = None
+        if callback_url:
+            def cb(images: List[Image.Image],) -> None:
+                buffer = BytesIO()
+                images[0].save(buffer, format="PNG")
+                buffer.seek(0)
+                encoded = base64.b64encode(buffer.read()).decode("utf-8")
+                requests.post(callback_url, json={
+                    "status": "success",
+                    "output": [f"data:image/png;base64,{encoded}"]
+                })
+                print(f"Callback with image.  Posting to {callback_url}")
+            callback = cb
+        
         generator = torch.Generator("cuda").manual_seed(seed)
         output = self.pipe(
             prompt=[prompt] * num_outputs if prompt is not None else None,
@@ -114,9 +134,10 @@ class Predictor(BasePredictor):
             guidance_scale=guidance_scale,
             generator=generator,
             num_inference_steps=num_inference_steps,
+            callback=callback,
         )
-        if any(output["nsfw_content_detected"]):
-            raise Exception("NSFW content detected, please try a different prompt")
+        #if any(output["nsfw_content_detected"]):
+        #    raise Exception("NSFW content detected, please try a different prompt")
 
         output_paths = []
         for i, sample in enumerate(output["sample"]):

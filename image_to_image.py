@@ -1,5 +1,5 @@
 import inspect
-from typing import List, Optional, Union, Tuple
+from typing import Callable, List, Optional, Union, Tuple
 
 import numpy as np
 import torch
@@ -53,6 +53,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
     ):
         super().__init__()
         scheduler = scheduler.set_format("pt")
+
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,
@@ -76,6 +77,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         guidance_scale: float = 7.5,
         eta: float = 0.0,
         generator: Optional[torch.Generator] = None,
+        callback: Optional[Callable[[Image.Image,], None]] = None,
     ) -> Image:
         if isinstance(prompt, str):
             batch_size = 1
@@ -191,6 +193,13 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 )
                 noisy_init_latents = self.scheduler.add_noise(init_latents_orig, mask_noise, timesteps)
                 latents = noisy_init_latents * mask + latents * (1 - mask)
+            
+            # If there's a callback, report the resulting image.
+            if callback:
+                # This is a little redundant.
+                image = self.vae.decode(1 / 0.18125 * latents)
+                image = (image / 2 + 0.5).clamp(0, 1)
+                callback(self.numpy_to_pil(image.cpu().permute(0, 2, 3, 1).numpy()))
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
@@ -199,14 +208,15 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
-        # run safety checker
-        safety_cheker_input = self.feature_extractor(
-            self.numpy_to_pil(image), return_tensors="pt"
-        ).to(self.device)
-        image, has_nsfw_concept = self.safety_checker(
-            images=image, clip_input=safety_cheker_input.pixel_values
-        )
+        # Skip the safety checker
+        # safety_cheker_input = self.feature_extractor(
+        #     self.numpy_to_pil(image), return_tensors="pt"
+        # ).to(self.device)
+        # image, has_nsfw_concept = self.safety_checker(
+        #     images=image, clip_input=safety_cheker_input.pixel_values
+        # )
 
+        has_nsfw_concept = [False]*batch_size
         image = self.numpy_to_pil(image)
 
         return {"sample": image, "nsfw_content_detected": has_nsfw_concept}
