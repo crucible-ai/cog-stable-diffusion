@@ -78,6 +78,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         eta: float = 0.0,
         generator: Optional[torch.Generator] = None,
         callback: Optional[Callable[[Image.Image,], None]] = None,
+        callback_frequency: int = 1,
     ) -> Image:
         if isinstance(prompt, str):
             batch_size = 1
@@ -195,7 +196,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
                 latents = noisy_init_latents * mask + latents * (1 - mask)
             
             # If there's a callback, report the resulting image.
-            if callback:
+            if callback and callback_frequency > 0 and (i % callback_frequency) == 0:
                 # This is a little redundant.
                 image = self.vae.decode(1 / 0.18125 * latents)
                 image = (image / 2 + 0.5).clamp(0, 1)

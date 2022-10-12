@@ -23,6 +23,11 @@ MODEL_CACHE = "diffusers-cache"
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        else:
+            self.device = torch.device('cpu')
+        
         print("Loading pipeline...")
         scheduler = PNDMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
@@ -34,10 +39,9 @@ class Predictor(BasePredictor):
             torch_dtype=torch.float16,
             cache_dir=MODEL_CACHE,
             local_files_only=True,
-        ).to("cuda")
+        ).to(self.device)
 
     @torch.inference_mode()
-    @torch.cuda.amp.autocast()
     def predict(
         self,
         prompt: str = Input(description="Input prompt", default=""),
@@ -78,6 +82,9 @@ class Predictor(BasePredictor):
         callback_url: str = Input(
             description="The URL to which each individual step will be POST-ed as a byte stream.", default=None
         ),
+        callback_frequency: int = Input(
+            description="A post request will be made to the callback url every `callback_frequency` iterations.  Setting this too high will lead to slower generation.", ge=1, default=5
+        ),
     ) -> List[Path]:
         """Run a single prediction on the model"""
         if seed is None:
@@ -91,7 +98,7 @@ class Predictor(BasePredictor):
 
         if init_image:
             init_image = Image.open(init_image).convert("RGB")
-            init_image = preprocess_init_image(init_image, width, height).to("cuda")
+            init_image = preprocess_init_image(init_image, width, height).to(self.device)
 
             # use PNDM with init images
             scheduler = PNDMScheduler(
@@ -107,7 +114,7 @@ class Predictor(BasePredictor):
 
         if mask:
             mask = Image.open(mask).convert("RGB")
-            mask = preprocess_mask(mask, width, height).to("cuda")
+            mask = preprocess_mask(mask, width, height).to(self.device)
         
         callback = None
         if callback_url:
@@ -123,7 +130,7 @@ class Predictor(BasePredictor):
                 print(f"Callback with image.  Posting to {callback_url}")
             callback = cb
         
-        generator = torch.Generator("cuda").manual_seed(seed)
+        generator = torch.Generator(self.device).manual_seed(seed)
         output = self.pipe(
             prompt=[prompt] * num_outputs if prompt is not None else None,
             init_image=init_image,
@@ -135,6 +142,7 @@ class Predictor(BasePredictor):
             generator=generator,
             num_inference_steps=num_inference_steps,
             callback=callback,
+            callback_frequency=callback_frequency,
         )
         #if any(output["nsfw_content_detected"]):
         #    raise Exception("NSFW content detected, please try a different prompt")
