@@ -21,12 +21,6 @@ from cog import BasePredictor, Input, Path
 MODEL_CACHE = "diffusers-cache"
 
 
-# This should match the signature of the original safety checker:
-# image, has_nsfw_concept = self.safety_checker(clip_input=safety_checker_input.pixel_values, images=image)
-def null_safety_checker(images, *args, **kwargs):
-    return images, [False]*len(images)
-
-
 class ReportingSchedulerWrapper:
     def __init__(self,
              wrapped_scheduler,
@@ -77,8 +71,10 @@ class Predictor(BasePredictor):
             "stabilityai/stable-diffusion-2-base",
             cache_dir=MODEL_CACHE,
             local_files_only=True,
+            revision="fp16",
+            torch_dtype=torch.float16,
+            safety_checker=None,
         ).to(self.device)
-        self.txt2img_pipe.safety_checker = null_safety_checker
 
         self.img2img_pipe = StableDiffusionImg2ImgPipeline(
             vae=self.txt2img_pipe.vae,
@@ -86,7 +82,7 @@ class Predictor(BasePredictor):
             tokenizer=self.txt2img_pipe.tokenizer,
             unet=self.txt2img_pipe.unet,
             scheduler=self.txt2img_pipe.scheduler,
-            safety_checker=self.txt2img_pipe.safety_checker,
+            safety_checker=None,
             feature_extractor=self.txt2img_pipe.feature_extractor,
         ).to(self.device)
 
@@ -96,7 +92,7 @@ class Predictor(BasePredictor):
             tokenizer=self.txt2img_pipe.tokenizer,
             unet=self.txt2img_pipe.unet,
             scheduler=self.txt2img_pipe.scheduler,
-            safety_checker=self.txt2img_pipe.safety_checker,
+            safety_checker=None,
             feature_extractor=self.txt2img_pipe.feature_extractor,
         ).to(self.device)
 
