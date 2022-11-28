@@ -254,6 +254,11 @@ def make_scheduler(name, image_callback_url: str = "", progress_callback_url: st
                 })
                 print(f"Callback with image.  Posting to {image_callback_url}")
             image_callback = cb
-        scheduler =
+        scheduler = ReportingSchedulerWrapper(
+            wrapped_scheduler=scheduler,
+            progress_callback=None, # For now
+            image_callback=image_callback,
+            callback_frequency=callback_frequency
+        )
 
     return scheduler
