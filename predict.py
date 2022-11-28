@@ -5,6 +5,7 @@ from typing import Callable, Optional, List, Tuple
 
 import requests
 import torch
+from cog import BasePredictor, Input, Path
 from diffusers import (
     EulerDiscreteScheduler,
     PNDMScheduler,
@@ -15,18 +16,37 @@ from diffusers import (
     StableDiffusionInpaintPipelineLegacy,
 )
 from PIL import Image
-from cog import BasePredictor, Input, Path
 
 
 MODEL_CACHE = "diffusers-cache"
 
 
+def hijack_scheduler_step(
+        scheduler,
+        progress_callback: Optional[Callable],
+        image_callback: Optional[Callable],
+        callback_frequency: int = 0,
+):
+    assert callback_frequency >= 0
+    previous_scheduler_step = scheduler.step
+    def logging_step(*args, **kwargs):
+        model_out = args[0] or kwargs.get('model_out')
+        timestep = args[1] or kwargs.get('timestep', 0)
+        if callback_frequency == 0 or timestep % callback_frequency == 0:
+            if image_callback:
+                #image = self.vae.decode(1 / 0.18125 * latents)
+                #image = (image / 2 + 0.5).clamp(0, 1)
+                image = model_out[0, :, :, :]
+                raise NotImplementedError("Debugging this stupid callback to hell.")
+                #image_callback(numpy_to_pil(image.cpu().permute(0, 2, 3, 1).numpy()))
+        previous_scheduler_step(*args, **kwargs)
+    scheduler.step = logging_step
+
+
 class ReportingSchedulerWrapper:
     def __init__(self,
              wrapped_scheduler,
-             progress_callback: Optional[Callable],
-             image_callback: Optional[Callable],
-             callback_frequency: int = 0,
+
     ):
         self.wrapped_scheduler = wrapped_scheduler
         self.progress_callback = progress_callback
@@ -34,15 +54,7 @@ class ReportingSchedulerWrapper:
         self.callback_frequency = callback_frequency
 
     def step(self, *args, **kwargs):
-        model_out = args[0] or kwargs.get('model_out')
-        timestep = args[1] or kwargs.get('timestep', 0)
-        if self.callback_frequency == 0 or timestep % self.callback_frequency == 0:
-            if self.image_callback:
-                #image = self.vae.decode(1 / 0.18125 * latents)
-                #image = (image / 2 + 0.5).clamp(0, 1)
-                image = model_out[0, :, :, :]
-                self.image_callback(self.numpy_to_pil(image.cpu().permute(0, 2, 3, 1).numpy()))
-        return self.wrapped_scheduler(*args, **kwargs)
+
 
     # Wrap everything else to make an invisible report wrapper.
     def __call__(self, *args, **kwargs):
@@ -259,11 +271,6 @@ def make_scheduler(
                 })
                 print(f"Callback with image.  Posting to {image_callback_url}")
             image_callback = cb
-        scheduler = ReportingSchedulerWrapper(
-            wrapped_scheduler=scheduler,
-            progress_callback=None,  # For now
-            image_callback=image_callback,
-            callback_frequency=callback_frequency
-        )
+        hijack_scheduler_step(scheduler, None, image_callback_url, callback_frequency)
 
     return scheduler
