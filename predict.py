@@ -6,6 +6,7 @@ from typing import Callable, Optional, List, Tuple
 import requests
 import torch
 from diffusers import (
+    EulerDiscreteScheduler,
     PNDMScheduler,
     LMSDiscreteScheduler,
     DDIMScheduler,
@@ -73,7 +74,7 @@ class Predictor(BasePredictor):
 
         print("Loading pipelines...")
         self.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
+            "stabilityai/stable-diffusion-2-base",
             cache_dir=MODEL_CACHE,
             local_files_only=True,
         ).to(self.device)
@@ -138,9 +139,9 @@ class Predictor(BasePredictor):
             description="Scale for classifier-free guidance", ge=1, le=20, default=7.5
         ),
         scheduler: str = Input(
-            default="K-LMS",
-            choices=["DDIM", "K-LMS", "PNDM"],
-            description="Choose a scheduler. If you use an init image, PNDM will be used",
+            default="EULER-DISCRETE",
+            choices=["DDIM", "K-LMS", "PNDM", "EULER-DISCRETE"],
+            description="Choose a scheduler. If you use an init image, PNDM will be used. Default: EULER-DISCRETE",
         ),
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
@@ -223,8 +224,16 @@ class Predictor(BasePredictor):
         return output_paths
 
 
-def make_scheduler(name, image_callback_url: str = "", progress_callback_url: str = "", callback_frequency: int = -1):
+def make_scheduler(
+        name="EULER-DISCRETE",
+        image_callback_url: str = "",
+        progress_callback_url: str = "",
+        callback_frequency: int = -1
+):
     scheduler = {
+        "EULER-DISCRETE": EulerDiscreteScheduler.from_pretrained(
+            "stabilityai/stable-diffusion-2-base", subfolder="scheduler"
+        ),
         "PNDM": PNDMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
         ),
@@ -256,7 +265,7 @@ def make_scheduler(name, image_callback_url: str = "", progress_callback_url: st
             image_callback = cb
         scheduler = ReportingSchedulerWrapper(
             wrapped_scheduler=scheduler,
-            progress_callback=None, # For now
+            progress_callback=None,  # For now
             image_callback=image_callback,
             callback_frequency=callback_frequency
         )
