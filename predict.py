@@ -1,23 +1,66 @@
 import base64
 import os
 from io import BytesIO
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 
 import requests
 import torch
-from torch import autocast
-from diffusers import PNDMScheduler, LMSDiscreteScheduler
+from diffusers import (
+    PNDMScheduler,
+    LMSDiscreteScheduler,
+    DDIMScheduler,
+    StableDiffusionPipeline,
+    StableDiffusionImg2ImgPipeline,
+    StableDiffusionInpaintPipelineLegacy,
+)
 from PIL import Image
 from cog import BasePredictor, Input, Path
 
-from image_to_image import (
-    StableDiffusionImg2ImgPipeline,
-    preprocess_init_image,
-    preprocess_mask,
-)
-
 
 MODEL_CACHE = "diffusers-cache"
+
+
+# This should match the signature of the original safety checker:
+# image, has_nsfw_concept = self.safety_checker(clip_input=safety_checker_input.pixel_values, images=image)
+def null_safety_checker(images, *args, **kwargs):
+    return images, [False]*len(images)
+
+
+class ReportingSchedulerWrapper:
+    def __init__(self,
+             wrapped_scheduler,
+             progress_callback: Optional[Callable],
+             image_callback: Optional[Callable],
+             callback_frequency: int = 0,
+    ):
+        self.wrapped_scheduler = wrapped_scheduler
+        self.progress_callback = progress_callback
+        self.image_callback = image_callback
+        self.callback_frequency = callback_frequency
+
+    def step(self, *args, **kwargs):
+        model_out = args[0] or kwargs.get('model_out')
+        timestep = args[1] or kwargs.get('timestep', 0)
+        if self.callback_frequency == 0 or timestep % self.callback_frequency == 0:
+            if self.image_callback:
+                #image = self.vae.decode(1 / 0.18125 * latents)
+                #image = (image / 2 + 0.5).clamp(0, 1)
+                image = model_out[0, :, :, :]
+                self.image_callback(self.numpy_to_pil(image.cpu().permute(0, 2, 3, 1).numpy()))
+        return self.wrapped_scheduler(*args, **kwargs)
+
+    # Wrap everything else to make an invisible report wrapper.
+    def __call__(self, *args, **kwargs):
+        return self.wrapped_scheduler.__call__(*args, **kwargs)
+
+    def __getattr__(self, item):
+        return self.wrapped_scheduler.__getattr__(item)
+
+    def __getattribute__(self, item):
+        return self.wrapped_scheduler.__getattribute__(item)
+
+    def __setattr__(self, key, value):
+        return self.wrapped_scheduler.__setattr__(self, key, value)
 
 
 class Predictor(BasePredictor):
@@ -27,18 +70,33 @@ class Predictor(BasePredictor):
             self.device = torch.device('cuda')
         else:
             self.device = torch.device('cpu')
-        
-        print("Loading pipeline...")
-        scheduler = PNDMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        )
-        self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "CompVis/stable-diffusion-v1-4",
-            scheduler=scheduler,
-            revision="fp16",
-            torch_dtype=torch.float16,
+
+        print("Loading pipelines...")
+        self.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
             cache_dir=MODEL_CACHE,
             local_files_only=True,
+        ).to(self.device)
+        self.txt2img_pipe.safety_checker = null_safety_checker
+
+        self.img2img_pipe = StableDiffusionImg2ImgPipeline(
+            vae=self.txt2img_pipe.vae,
+            text_encoder=self.txt2img_pipe.text_encoder,
+            tokenizer=self.txt2img_pipe.tokenizer,
+            unet=self.txt2img_pipe.unet,
+            scheduler=self.txt2img_pipe.scheduler,
+            safety_checker=self.txt2img_pipe.safety_checker,
+            feature_extractor=self.txt2img_pipe.feature_extractor,
+        ).to(self.device)
+
+        self.inpaint_pipe = StableDiffusionInpaintPipelineLegacy(
+            vae=self.txt2img_pipe.vae,
+            text_encoder=self.txt2img_pipe.text_encoder,
+            tokenizer=self.txt2img_pipe.tokenizer,
+            unet=self.txt2img_pipe.unet,
+            scheduler=self.txt2img_pipe.scheduler,
+            safety_checker=self.txt2img_pipe.safety_checker,
+            feature_extractor=self.txt2img_pipe.feature_extractor,
         ).to(self.device)
 
     @torch.inference_mode()
@@ -48,20 +106,20 @@ class Predictor(BasePredictor):
         prompt: str = Input(description="Input prompt", default=""),
         width: int = Input(
             description="Width of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 512, 768, 1024],
+            choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
             default=512,
         ),
         height: int = Input(
             description="Height of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 512, 768, 1024],
+            choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
             default=512,
         ),
         init_image: Path = Input(
-            description="Inital image to generate variations of. Will be resized to the specified width and height",
+            description="Initial image to generate variations of. Will be resized to the specified width and height",
             default=None,
         ),
         mask: Path = Input(
-            description="Black and white image to use as mask for inpainting over init_image. Black pixels are inpainted and white pixels are preserved. Experimental feature, tends to work better with prompt strength of 0.5-0.7",
+            description="Black and white image to use as mask for inpainting over init_image. Black pixels are inpainted and white pixels are preserved. Tends to work better with prompt strength of 0.5-0.7. Consider using https://replicate.com/andreasjansson/stable-diffusion-inpainting instead.",
             default=None,
         ),
         prompt_strength: float = Input(
@@ -69,7 +127,10 @@ class Predictor(BasePredictor):
             default=0.8,
         ),
         num_outputs: int = Input(
-            description="Number of images to output", choices=[1, 4], default=1
+            description="Number of images to output. If the NSFW filter is triggered, you may get fewer outputs than this.",
+            ge=1,
+            le=10,
+            default=1
         ),
         num_inference_steps: int = Input(
             description="Number of denoising steps", ge=1, le=500, default=50
@@ -77,10 +138,18 @@ class Predictor(BasePredictor):
         guidance_scale: float = Input(
             description="Scale for classifier-free guidance", ge=1, le=20, default=7.5
         ),
+        scheduler: str = Input(
+            default="K-LMS",
+            choices=["DDIM", "K-LMS", "PNDM"],
+            description="Choose a scheduler. If you use an init image, PNDM will be used",
+        ),
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
-        callback_url: str = Input(
+        progress_callback_url: str = Input(
+            description="The URL to which a percent will be posted.", default=None
+        ),
+        image_callback_url: str = Input(
             description="The URL to which each individual step will be POST-ed as a byte stream.", default=None
         ),
         callback_frequency: int = Input(
@@ -92,66 +161,100 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
-        if width == height == 1024:
+        if width * height > 786432:
             raise ValueError(
                 "Maximum size is 1024x768 or 768x1024 pixels, because of memory limits. Please select a lower width or height."
             )
 
-        if init_image:
-            init_image = Image.open(init_image).convert("RGB")
-            init_image = preprocess_init_image(init_image, width, height).to(self.device)
-
-            # use PNDM with init images
-            scheduler = PNDMScheduler(
-                beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-            )
-        else:
-            # use LMS without init images
-            scheduler = LMSDiscreteScheduler(
-                beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-            )
-
-        self.pipe.scheduler = scheduler
-
+        extra_kwargs = {}
         if mask:
-            mask = Image.open(mask).convert("RGB")
-            mask = preprocess_mask(mask, width, height).to(self.device)
-        
-        callback = None
-        if callback_url:
-            def cb(images: List[Image.Image],) -> None:
-                buffer = BytesIO()
-                images[0].save(buffer, format="PNG")
-                buffer.seek(0)
-                encoded = base64.b64encode(buffer.read()).decode("utf-8")
-                requests.post(callback_url, json={
-                    "status": "success",
-                    "output": [f"data:image/png;base64,{encoded}"]
-                })
-                print(f"Callback with image.  Posting to {callback_url}")
-            callback = cb
-        
-        generator = torch.Generator(self.device).manual_seed(seed)
-        output = self.pipe(
+            if not init_image:
+                raise ValueError("mask was provided without init_image")
+            pipe = self.inpaint_pipe
+            init_image = Image.open(init_image).convert("RGB")
+            extra_kwargs = {
+                "mask_image": Image.open(mask).convert("RGB").resize(init_image.size),
+                "init_image": init_image,
+                "strength": prompt_strength,
+            }
+        elif init_image:
+            pipe = self.img2img_pipe
+            extra_kwargs = {
+                "init_image": Image.open(init_image).convert("RGB"),
+                "strength": prompt_strength,
+            }
+        else:
+            pipe = self.txt2img_pipe
+
+        pipe.scheduler = make_scheduler(scheduler, progress_callback_url, image_callback_url, callback_frequency)
+
+        generator = torch.Generator("cuda").manual_seed(seed)
+        output = pipe(
             prompt=[prompt] * num_outputs if prompt is not None else None,
-            init_image=init_image,
-            mask=mask,
             width=width,
             height=height,
-            prompt_strength=prompt_strength,
             guidance_scale=guidance_scale,
             generator=generator,
             num_inference_steps=num_inference_steps,
-            callback=callback,
-            callback_frequency=callback_frequency,
+            **extra_kwargs,
         )
-        #if any(output["nsfw_content_detected"]):
-        #    raise Exception("NSFW content detected, please try a different prompt")
+        num_outputs = len(output)
 
+        samples = [
+            output.images[i]
+            for i, nsfw_flag in enumerate(output.nsfw_content_detected)
+            if not nsfw_flag
+        ]
+
+        if len(samples) == 0:
+            raise Exception(
+                f"NSFW content detected. Try running it again, or try a different prompt."
+            )
+
+        if num_outputs > len(samples):
+            print(
+                f"NSFW content detected in {num_outputs - len(samples)} outputs, showing the rest {len(samples)} images..."
+            )
         output_paths = []
-        for i, sample in enumerate(output["sample"]):
+        for i, sample in enumerate(samples):
             output_path = f"/tmp/out-{i}.png"
             sample.save(output_path)
             output_paths.append(Path(output_path))
 
         return output_paths
+
+
+def make_scheduler(name, image_callback_url: str = "", progress_callback_url: str = "", callback_frequency: int = -1):
+    scheduler = {
+        "PNDM": PNDMScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
+        ),
+        "K-LMS": LMSDiscreteScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
+        ),
+        "DDIM": DDIMScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            clip_sample=False,
+            set_alpha_to_one=False,
+        ),
+    }[name]
+
+    if callback_frequency >= 0:
+        image_callback = None
+        if image_callback_url:
+            def cb(images: List[Image.Image], ) -> None:
+                buffer = BytesIO()
+                images[0].save(buffer, format="PNG")
+                buffer.seek(0)
+                encoded = base64.b64encode(buffer.read()).decode("utf-8")
+                requests.post(image_callback_url, json={
+                    "status": "success",
+                    "output": [f"data:image/png;base64,{encoded}"]
+                })
+                print(f"Callback with image.  Posting to {image_callback_url}")
+            image_callback = cb
+        scheduler =
+
+    return scheduler
