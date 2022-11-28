@@ -30,8 +30,8 @@ def hijack_scheduler_step(
     assert callback_frequency >= 0
     previous_scheduler_step = scheduler.step
     def logging_step(*args, **kwargs):
-        model_out = args[0] or kwargs.get('model_out')
-        timestep = args[1] or kwargs.get('timestep', 0)
+        model_out = kwargs.get('model_out', args[0])
+        timestep = kwargs.get('timestep', args[1] or 0)
         if callback_frequency == 0 or timestep % callback_frequency == 0:
             if image_callback:
                 #image = self.vae.decode(1 / 0.18125 * latents)
@@ -230,7 +230,11 @@ def make_scheduler(
         ),
     }[name]
 
-    if callback_frequency >= 0:
+    # While callback frequency default to a higher value to avoid weird behavior, if no urls are provided, snap to -1.
+    if not image_callback_url and not progress_callback_url:
+        callback_frequency = -1
+
+    if callback_frequency >= 0 and (image_callback_url or progress_callback_url):
         image_callback = None
         if image_callback_url:
             def cb(images: List[Image.Image], ) -> None:
@@ -244,6 +248,6 @@ def make_scheduler(
                 })
                 print(f"Callback with image.  Posting to {image_callback_url}")
             image_callback = cb
-        hijack_scheduler_step(scheduler, None, image_callback_url, callback_frequency)
+        hijack_scheduler_step(scheduler, None, image_callback, callback_frequency)
 
     return scheduler
