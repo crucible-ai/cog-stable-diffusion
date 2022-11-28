@@ -43,33 +43,6 @@ def hijack_scheduler_step(
     scheduler.step = logging_step
 
 
-class ReportingSchedulerWrapper:
-    def __init__(self,
-             wrapped_scheduler,
-
-    ):
-        self.wrapped_scheduler = wrapped_scheduler
-        self.progress_callback = progress_callback
-        self.image_callback = image_callback
-        self.callback_frequency = callback_frequency
-
-    def step(self, *args, **kwargs):
-
-
-    # Wrap everything else to make an invisible report wrapper.
-    def __call__(self, *args, **kwargs):
-        return self.wrapped_scheduler.__call__(*args, **kwargs)
-
-    def __getattr__(self, item):
-        return self.wrapped_scheduler.__getattr__(item)
-
-    def __getattribute__(self, item):
-        return self.wrapped_scheduler.__getattribute__(item)
-
-    def __setattr__(self, key, value):
-        return self.wrapped_scheduler.__setattr__(self, key, value)
-
-
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
