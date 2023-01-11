@@ -1,15 +1,17 @@
-# Stable Diffusion Cog model
-
-This is a fork of an implementation of the [Diffusers Stable Diffusion 1.5](https://huggingface.co/CompVis/stable-diffusion-v1-5) as a Cog model.
+# Stable Diffusion v2 Cog model
 
 There are two key differences between this and the stock Cog model:
 
 1. The Safety Detector is deactivated
 2. The service expects a callback URL where it will post every step of the diffusion
 
-First, download the pre-trained weights [with your Hugging Face auth token](https://huggingface.co/settings/tokens):
+[![Replicate](https://replicate.com/stability-ai/stable-diffusion/badge)](https://replicate.com/stability-ai/stable-diffusion) 
 
-    cog run script/download-weights <your-hugging-face-auth-token>
+This is an implementation of the [Diffusers Stable Diffusion v2.1](https://huggingface.co/stabilityai/stable-diffusion-2-1) as a Cog model. [Cog packages machine learning models as standard containers.](https://github.com/replicate/cog)
+
+First, download the pre-trained weights:
+
+    cog run script/download-weights 
 
 Then, you can run predictions:
 
