@@ -1,7 +1,7 @@
 import base64
 import os
 from io import BytesIO
-from typing import Callable, Optional, List, Tuple
+from typing import List
 
 import requests
 import torch
@@ -17,30 +17,10 @@ from diffusers import (
 )
 from PIL import Image
 
+from callback_scheduler import hijack_scheduler_step
+
 
 MODEL_CACHE = "diffusers-cache"
-
-
-def hijack_scheduler_step(
-        scheduler,
-        progress_callback: Optional[Callable],
-        image_callback: Optional[Callable],
-        callback_frequency: int = 0,
-):
-    assert callback_frequency >= 0
-    previous_scheduler_step = scheduler.step
-    def logging_step(*args, **kwargs):
-        model_out = kwargs.get('model_out', args[0])
-        timestep = kwargs.get('timestep', args[1] or 0)
-        if callback_frequency == 0 or timestep % callback_frequency == 0:
-            if image_callback:
-                #image = self.vae.decode(1 / 0.18125 * latents)
-                #image = (image / 2 + 0.5).clamp(0, 1)
-                image = model_out[0, :, :, :]
-                raise NotImplementedError("Debugging this stupid callback to hell.")
-                #image_callback(numpy_to_pil(image.cpu().permute(0, 2, 3, 1).numpy()))
-        previous_scheduler_step(*args, **kwargs)
-    scheduler.step = logging_step
 
 
 class Predictor(BasePredictor):
@@ -129,7 +109,7 @@ class Predictor(BasePredictor):
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
         progress_callback_url: str = Input(
-            description="The URL to which a percent will be posted.", default=None
+            description="The URL to which a step_num will be posted.", default=None
         ),
         image_callback_url: str = Input(
             description="The URL to which each individual step will be POST-ed as a byte stream.", default=None
@@ -240,6 +220,7 @@ def make_scheduler(
 
     if callback_frequency >= 0 and (image_callback_url or progress_callback_url):
         image_callback = None
+        progress_callback = None
         if image_callback_url:
             def cb(images: List[Image.Image], ) -> None:
                 buffer = BytesIO()
@@ -252,6 +233,10 @@ def make_scheduler(
                 })
                 print(f"Callback with image.  Posting to {image_callback_url}")
             image_callback = cb
-        hijack_scheduler_step(scheduler, None, image_callback, callback_frequency)
+        if progress_callback_url:
+            def cb(step: int, ) -> None:
+                requests.post(progress_callback_url, json={"step": step})
+            progress_callback = cb
+        hijack_scheduler_step(scheduler, progress_callback, image_callback, callback_frequency)
 
     return scheduler
