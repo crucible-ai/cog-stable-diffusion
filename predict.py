@@ -15,9 +15,6 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     DPMSolverMultistepScheduler,
 )
-from diffusers.pipelines.stable_diffusion.safety_checker import (
-    StableDiffusionSafetyChecker,
-)
 from PIL import Image
 
 from callback_scheduler import hijack_scheduler_step
@@ -25,20 +22,14 @@ from callback_scheduler import hijack_scheduler_step
 
 MODEL_ID = "stabilityai/stable-diffusion-2-1"
 MODEL_CACHE = "diffusers-cache"
-SAFETY_MODEL_ID = "CompVis/stable-diffusion-safety-checker"
 
 
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
-        safety_checker = StableDiffusionSafetyChecker.from_pretrained(
-            SAFETY_MODEL_ID,
-            cache_dir=MODEL_CACHE,
-            local_files_only=True,
-        )
         self.pipe = StableDiffusionPipeline.from_pretrained(
             MODEL_ID,
-            safety_checker=safety_checker,
+            safety_checker=None,
             cache_dir=MODEL_CACHE,
             local_files_only=True,
         ).to("cuda")
@@ -57,12 +48,12 @@ class Predictor(BasePredictor):
         width: int = Input(
             description="Width of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
             choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
-            default=768,
+            default=512,
         ),
         height: int = Input(
             description="Height of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
             choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
-            default=768,
+            default=512,
         ),
         prompt_strength: float = Input(
             description="Prompt strength when using init image. 1.0 corresponds to full destruction of information in init image",
@@ -109,6 +100,10 @@ class Predictor(BasePredictor):
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
+        
+        # Spiteful forced integer cast.  Sometimes width is coming back as 'FieldInfo' instead of int.
+        width = int(width)
+        height = int(height)
 
         if width * height > 786432:
             raise ValueError(
