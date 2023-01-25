@@ -1,8 +1,8 @@
 import base64
 import os
-from abc import abstractmethod
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any, List
+from typing import List
 
 import jwt
 import requests
@@ -24,38 +24,12 @@ from callback_scheduler import hijack_scheduler_step
 
 MODEL_ID = "stabilityai/stable-diffusion-2-1-base"
 MODEL_CACHE = "diffusers-cache"
-REQUIRE_KEY = os.environ.get("REQUIRE_ENCRYPTION", "true") != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
+SIGNATURE_TIMEOUT_SECONDS = 60.0
+REQUIRE_SIGNATURE = os.environ.get("REQUIRE_ENCRYPTION", "true") != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
 SHARED_KEY = os.environ.get("STABLE_DIFFUSION_SHARED_KEY")  # Generate with cryptography.fernet.Fernet.generate_key()
 
 
-class EncryptedPredictor(BasePredictor):
-    def predict(self,
-        encrypted_payload: str = Input(description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters.", default=""),
-        **kwargs
-    ) -> Any:
-        if encrypted_payload:
-            # encoded = jwt.encode({"some": "payload"}, SHARED_KEY, algorithm="HS256")
-            new_kwargs = jwt.decode(encrypted_payload.encode("utf-8"), SHARED_KEY, algorithms="HS256")
-            return self.authenticated_prediction(**new_kwargs)
-        elif REQUIRE_KEY:
-            return {}
-        else:
-            return self.unauthenticated_prediction(**kwargs)
-
-    @abstractmethod
-    def authenticated_prediction(self, **kwargs: Any) -> Any:
-        """
-
-        """
-
-    @abstractmethod
-    def unauthenticated_prediction(self, **kwargs: Any) -> Any:
-        """
-
-        """
-
-
-class Predictor(EncryptedPredictor):
+class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         self.pipe = StableDiffusionPipeline.from_pretrained(
@@ -65,11 +39,8 @@ class Predictor(EncryptedPredictor):
             local_files_only=True,
         ).to("cuda")
 
-    def unauthenticated_prediction(self, **kwargs: Any) -> Any:
-        self.authenticated_prediction(**kwargs)
-
     @torch.inference_mode()
-    def authenticated_prediction(
+    def predict(
         self,
         prompt: str = Input(
             description="Input prompt",
@@ -132,8 +103,29 @@ class Predictor(EncryptedPredictor):
         callback_frequency: int = Input(
             description="A post request will be made to the callback url every `callback_frequency` iterations.  Setting this too high will lead to slower generation.", ge=1, default=5
         ),
+        payload_signature: str = Input(
+            description="A small JSON payload with the current timestamp in {'time': utcnow} form.", default=""
+        ),
     ) -> List[Path]:
         """Run a single prediction on the model"""
+
+        # If we require a shared key...
+        if REQUIRE_SIGNATURE:
+            # It would be MUCH better if we could sign and verify all of the parameters,
+            # but I'm running into issues automatically verifying them.
+            # Something like...
+            #signature = inspect.signature(self.predict)
+            #for name, parameter in signature.parameters.items():
+
+            # enc = jwt.encode({"time":datetime.isoformat(datetime.utcnow())+"+00:00"}, SHARED_KEY, algorithm="HS256")
+            signed_kwargs = jwt.decode(payload_signature.encode("utf-8"), SHARED_KEY, algorithms="HS256")
+            if 'time' not in signed_kwargs:
+                raise ValueError("Signature does not have 'time' parameter.")
+            sent = datetime.fromisoformat(signed_kwargs['time'])
+            utcnow = datetime.utcnow()
+            delta = utcnow - sent
+            if delta.seconds > SIGNATURE_TIMEOUT_SECONDS:
+                raise ValueError("Request signature too old.")
 
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
