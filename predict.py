@@ -22,7 +22,7 @@ from PIL import Image
 from callback_scheduler import hijack_scheduler_step
 
 
-MODEL_ID = "stabilityai/stable-diffusion-2-1"
+MODEL_ID = "stabilityai/stable-diffusion-2-1-base"
 MODEL_CACHE = "diffusers-cache"
 REQUIRE_KEY = os.environ["REQUIRE_ENCRYPTION"] != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
 if REQUIRE_KEY:
