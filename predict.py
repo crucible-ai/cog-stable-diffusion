@@ -24,9 +24,8 @@ from callback_scheduler import hijack_scheduler_step
 
 MODEL_ID = "stabilityai/stable-diffusion-2-1-base"
 MODEL_CACHE = "diffusers-cache"
-REQUIRE_KEY = os.environ["REQUIRE_ENCRYPTION"] != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
-if REQUIRE_KEY:
-    SHARED_KEY = os.environ["STABLE_DIFFUSION_SHARED_KEY"]  # Generate with cryptography.fernet.Fernet.generate_key()
+REQUIRE_KEY = os.environ.get("REQUIRE_ENCRYPTION", "true") != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
+SHARED_KEY = os.environ.get("STABLE_DIFFUSION_SHARED_KEY")  # Generate with cryptography.fernet.Fernet.generate_key()
 
 
 class Predictor(BasePredictor):
