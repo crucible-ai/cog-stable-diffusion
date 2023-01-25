@@ -122,7 +122,8 @@ class Predictor(BasePredictor):
             if 'time' not in signed_kwargs:
                 raise ValueError("Signature does not have 'time' parameter.")
             sent = datetime.fromisoformat(signed_kwargs['time'])
-            utcnow = datetime.utcnow()
+            #utcnow = datetime.utcnow()
+            utcnow = datetime.now(timezone.utc)  # utcnow doesn't set TZ to UTC, for some reason.
             delta = utcnow - sent
             if delta.seconds > SIGNATURE_TIMEOUT_SECONDS:
                 raise ValueError("Request signature too old.")
