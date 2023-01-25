@@ -91,6 +91,9 @@ class Predictor(BasePredictor):
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
+        allow_nsfw: bool = Input(
+            description="If true, will skip checks for NSFW images.", default=False
+        ),
         progress_callback_url: str = Input(
             description="The URL to which a step_num will be posted.", default=None
         ),
@@ -143,8 +146,8 @@ class Predictor(BasePredictor):
         # TODO: Disable the NSFW detector to avoid wasting cycles...
         output_paths = []
         for i, sample in enumerate(output.images):
-            #if output.nsfw_content_detected and output.nsfw_content_detected[i]:
-            #    continue
+            if (output.nsfw_content_detected and output.nsfw_content_detected[i]) and not allow_nsfw:
+                continue
 
             output_path = f"/tmp/out-{i}.png"
             sample.save(output_path)
