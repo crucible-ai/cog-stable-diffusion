@@ -104,7 +104,7 @@ class Predictor(BasePredictor):
             description="A post request will be made to the callback url every `callback_frequency` iterations.  Setting this too high will lead to slower generation.", ge=1, default=5
         ),
         encrypted_payload: str = Input(
-            description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters."
+            description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters.", default=""
         )
     ) -> List[Path]:
         """Run a single prediction on the model"""
