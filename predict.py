@@ -1,8 +1,10 @@
 import base64
+import json
 import os
 from io import BytesIO
 from typing import List
 
+import jwt
 import requests
 import torch
 from cog import BasePredictor, Input, Path
@@ -22,6 +24,9 @@ from callback_scheduler import hijack_scheduler_step
 
 MODEL_ID = "stabilityai/stable-diffusion-2-1"
 MODEL_CACHE = "diffusers-cache"
+REQUIRE_KEY = os.environ["REQUIRE_ENCRYPTION"] != "false"  # This must be explicitly set to exactly 'false' to disable encryption.
+if REQUIRE_KEY:
+    SHARED_KEY = os.environ["STABLE_DIFFUSION_SHARED_KEY"]  # Generate with cryptography.fernet.Fernet.generate_key()
 
 
 class Predictor(BasePredictor):
@@ -95,8 +100,18 @@ class Predictor(BasePredictor):
         callback_frequency: int = Input(
             description="A post request will be made to the callback url every `callback_frequency` iterations.  Setting this too high will lead to slower generation.", ge=1, default=5
         ),
+        encrypted_payload: str = Input(
+            description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters."
+        )
     ) -> List[Path]:
         """Run a single prediction on the model"""
+
+        # If we require a shared key...
+        if REQUIRE_KEY:
+            # encoded = jwt.encode({"some": "payload"}, SHARED_KEY, algorithm="HS256")
+            new_kwargs = jwt.decode(encrypted_payload, SHARED_KEY, algorithms="HS256")
+            return self.predict(**new_kwargs)
+
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
