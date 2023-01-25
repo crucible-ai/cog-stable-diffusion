@@ -1,8 +1,8 @@
 import base64
-import json
 import os
+from abc import abstractmethod
 from io import BytesIO
-from typing import List
+from typing import Any, List
 
 import jwt
 import requests
@@ -28,7 +28,34 @@ REQUIRE_KEY = os.environ.get("REQUIRE_ENCRYPTION", "true") != "false"  # This mu
 SHARED_KEY = os.environ.get("STABLE_DIFFUSION_SHARED_KEY")  # Generate with cryptography.fernet.Fernet.generate_key()
 
 
-class Predictor(BasePredictor):
+class EncryptedPredictor(BasePredictor):
+    def predict(self,
+        encrypted_payload: str = Input(description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters.", default=""),
+        **kwargs
+    ) -> Any:
+        if encrypted_payload:
+            # encoded = jwt.encode({"some": "payload"}, SHARED_KEY, algorithm="HS256")
+            new_kwargs = jwt.decode(encrypted_payload.encode("utf-8"), SHARED_KEY, algorithms="HS256")
+            return self.authenticated_prediction(**new_kwargs)
+        elif REQUIRE_KEY:
+            return {}
+        else:
+            return self.unauthenticated_prediction(**kwargs)
+
+    @abstractmethod
+    def authenticated_prediction(self, **kwargs: Any) -> Any:
+        """
+
+        """
+
+    @abstractmethod
+    def unauthenticated_prediction(self, **kwargs: Any) -> Any:
+        """
+
+        """
+
+
+class Predictor(EncryptedPredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         self.pipe = StableDiffusionPipeline.from_pretrained(
@@ -38,8 +65,11 @@ class Predictor(BasePredictor):
             local_files_only=True,
         ).to("cuda")
 
+    def unauthenticated_prediction(self, **kwargs: Any) -> Any:
+        self.authenticated_prediction(**kwargs)
+
     @torch.inference_mode()
-    def predict(
+    def authenticated_prediction(
         self,
         prompt: str = Input(
             description="Input prompt",
@@ -102,17 +132,8 @@ class Predictor(BasePredictor):
         callback_frequency: int = Input(
             description="A post request will be made to the callback url every `callback_frequency` iterations.  Setting this too high will lead to slower generation.", ge=1, default=5
         ),
-        encrypted_payload: str = Input(
-            description="All of the parameters, compressed as a JSON file, and signed.  This will be unpacked and used to recursively call predict if REQUIRE_KEY is set.  This will override all other parameters.", default=""
-        )
     ) -> List[Path]:
         """Run a single prediction on the model"""
-
-        # If we require a shared key...
-        if REQUIRE_KEY:
-            # encoded = jwt.encode({"some": "payload"}, SHARED_KEY, algorithm="HS256")
-            new_kwargs = jwt.decode(encrypted_payload, SHARED_KEY, algorithms="HS256")
-            return self.predict(**new_kwargs)
 
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
